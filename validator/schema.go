@@ -315,7 +315,40 @@ func validateTypeDefinitions(schema *Schema) *gqlerror.Error {
 	return nil
 }
 
-// validateInputObjectCircularRefs rejects input object cycles of non-null fields.
+// finiteValueEdge is an input-object-to-input-object reference through one
+// field that can keep a finite value from existing: owner.field -> target.
+type finiteValueEdge struct {
+	owner  *Definition
+	field  *FieldDefinition
+	target *Definition
+}
+
+// finiteValueState tracks whether an input object type can be given a finite
+// value and the edges that decide it.
+type finiteValueState struct {
+	def *Definition
+	// targets are the references through fields that might lead to a type
+	// without a finite value.
+	targets []finiteValueEdge
+	// dependents are states whose own finiteness depends on this one.
+	dependents []*finiteValueState
+	// unresolved counts targets not yet proven finite for a regular (non-OneOf)
+	// input object.
+	unresolved int
+	hasFinite  bool
+}
+
+// validateInputObjectCircularRefs rejects input object types that cannot be
+// given any finite value.
+//
+// For a regular input object the chain is the classic one: it can only be
+// forced through a non-null field whose type is a bare named input object, not
+// a list, so such a cycle keeps the old "series of non-null fields" error.
+//
+// A OneOf input object picks exactly one field, so it only runs out of finite
+// values when every field leads to a type that has none. A scalar, enum or
+// list field (even an empty list is a value) is always an escape, and so is a
+// field that points to an input object which itself has a finite value.
 // https://spec.graphql.org/October2021/#sec-Input-Objects.Circular-References
 func validateInputObjectCircularRefs(schema *Schema) *gqlerror.Error {
 	types := make([]string, 0, len(schema.Types))
@@ -324,64 +357,181 @@ func validateInputObjectCircularRefs(schema *Schema) *gqlerror.Error {
 	}
 	sort.Strings(types)
 
-	// A type still on fieldPath means a cycle. A visited type was already checked.
-	visited := make(map[string]bool, len(schema.Types))
-	fieldPath := make([]*FieldDefinition, 0, len(schema.Types))
-	fieldPathIndexByTypeName := make(map[string]int, len(schema.Types))
-
-	var detectCycle func(def *Definition) *gqlerror.Error
-	detectCycle = func(def *Definition) *gqlerror.Error {
-		if visited[def.Name] {
-			return nil
+	states := make(map[string]*finiteValueState, len(schema.Types))
+	for _, name := range types {
+		if schema.Types[name].Kind == InputObject {
+			states[name] = &finiteValueState{def: schema.Types[name]}
 		}
-		visited[def.Name] = true
-		fieldPathIndexByTypeName[def.Name] = len(fieldPath)
+	}
+
+	var finiteQueue []*finiteValueState
+	markFinite := func(state *finiteValueState) {
+		if !state.hasFinite {
+			state.hasFinite = true
+			finiteQueue = append(finiteQueue, state)
+		}
+	}
+
+	// Build the edge graph and seed the types that have a finite value
+	// regardless of any other type.
+	for _, name := range types {
+		state, ok := states[name]
+		if !ok {
+			continue
+		}
+		def := state.def
 
 		for _, field := range def.Fields {
-			// A nullable field or any list breaks the chain.
-			if !field.Type.NonNull || field.Type.NamedType == "" {
+			// A list always has a finite value (the empty list) and scalar or
+			// enum fields are leaves, so only a bare named type can be an edge.
+			if field.Type.NamedType == "" {
 				continue
 			}
-			fieldType := schema.Types[field.Type.NamedType]
-			if fieldType == nil || fieldType.Kind != InputObject {
+			target := schema.Types[field.Type.NamedType]
+			if target == nil || target.Kind != InputObject {
+				continue
+			}
+			// A regular object is only forced through a non-null field. A
+			// OneOf object chooses one field, so a nullable bare input-object
+			// field counts as well; non-null OneOf fields were already rejected
+			// by validateDefinition.
+			if !def.IsOneOf() && !field.Type.NonNull {
 				continue
 			}
 
-			fieldPath = append(fieldPath, field)
-			if cycleIndex, ok := fieldPathIndexByTypeName[fieldType.Name]; ok {
-				cyclePath := fieldPath[cycleIndex:]
-				fieldNames := make([]string, len(cyclePath))
-				for i, cycleField := range cyclePath {
-					fieldNames[i] = cycleField.Name
-				}
-				return gqlerror.ErrorPosf(
-					cyclePath[0].Position,
-					"Cannot reference Input Object %s within itself through "+
-						"a series of non-null fields: %s.",
-					strconv.Quote(fieldType.Name),
-					strconv.Quote(strings.Join(fieldNames, ".")),
-				)
+			state.targets = append(state.targets, finiteValueEdge{
+				owner:  def,
+				field:  field,
+				target: target,
+			})
+			if targetState := states[target.Name]; targetState != nil {
+				targetState.dependents = append(targetState.dependents, state)
 			}
-			if err := detectCycle(fieldType); err != nil {
+		}
+
+		if def.IsOneOf() {
+			// One escape is enough: an empty OneOf object, or one with at
+			// least one field that is a scalar, enum or list, has a finite
+			// value straight away.
+			if len(def.Fields) == 0 || len(state.targets) < len(def.Fields) {
+				markFinite(state)
+			}
+		} else {
+			// A regular object has a finite value when every field that forces
+			// a value points to a type with a finite value.
+			state.unresolved = len(state.targets)
+			if state.unresolved == 0 {
+				markFinite(state)
+			}
+		}
+	}
+
+	// Propagate proven finite values backwards through the edges.
+	for len(finiteQueue) > 0 {
+		proven := finiteQueue[len(finiteQueue)-1]
+		finiteQueue = finiteQueue[:len(finiteQueue)-1]
+
+		for _, dependent := range proven.dependents {
+			if dependent.hasFinite {
+				continue
+			}
+			if dependent.def.IsOneOf() {
+				// One field with a finite value is all a OneOf object needs.
+				markFinite(dependent)
+				continue
+			}
+			dependent.unresolved--
+			if dependent.unresolved == 0 {
+				markFinite(dependent)
+			}
+		}
+	}
+
+	// Every input object still without a finite value is trapped in an
+	// unbreakable cycle; walk the remaining edges to name the first one. A
+	// type still on fieldPath means a cycle. A visited type was already checked.
+	visited := make(map[string]bool, len(states))
+	fieldPath := make([]finiteValueEdge, 0, len(states))
+	fieldPathIndexByTypeName := make(map[string]int, len(states))
+
+	var detectCycle func(state *finiteValueState) *gqlerror.Error
+	detectCycle = func(state *finiteValueState) *gqlerror.Error {
+		if visited[state.def.Name] {
+			return nil
+		}
+		visited[state.def.Name] = true
+		fieldPathIndexByTypeName[state.def.Name] = len(fieldPath)
+
+		for _, edge := range state.targets {
+			targetState := states[edge.target.Name]
+			if targetState == nil || targetState.hasFinite {
+				continue
+			}
+
+			fieldPath = append(fieldPath, edge)
+			if cycleIndex, ok := fieldPathIndexByTypeName[edge.target.Name]; ok {
+				return inputObjectCycleError(fieldPath[cycleIndex:])
+			}
+			if err := detectCycle(targetState); err != nil {
 				return err
 			}
 			fieldPath = fieldPath[:len(fieldPath)-1]
 		}
 
-		delete(fieldPathIndexByTypeName, def.Name)
+		delete(fieldPathIndexByTypeName, state.def.Name)
 		return nil
 	}
 
-	for _, typ := range types {
-		def := schema.Types[typ]
-		if def.Kind != InputObject {
+	for _, name := range types {
+		state, ok := states[name]
+		if !ok || state.hasFinite {
 			continue
 		}
-		if err := detectCycle(def); err != nil {
+		if err := detectCycle(state); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// inputObjectCycleError reports a cycle of input object fields that can never
+// carry a finite value. A cycle made only of regular input objects and their
+// non-null fields keeps the historical message; a cycle that runs through a
+// OneOf input object names each "Type.field" edge so every type on the cycle
+// is visible.
+func inputObjectCycleError(cyclePath []finiteValueEdge) *gqlerror.Error {
+	targetName := cyclePath[0].owner.Name
+
+	allRegular := true
+	fieldNames := make([]string, len(cyclePath))
+	for i, edge := range cyclePath {
+		fieldNames[i] = edge.field.Name
+		if edge.owner.IsOneOf() {
+			allRegular = false
+		}
+	}
+
+	if allRegular {
+		return gqlerror.ErrorPosf(
+			cyclePath[0].field.Position,
+			"Cannot reference Input Object %s within itself through "+
+				"a series of non-null fields: %s.",
+			strconv.Quote(targetName),
+			strconv.Quote(strings.Join(fieldNames, ".")),
+		)
+	}
+
+	qualifiedNames := make([]string, len(cyclePath))
+	for i, edge := range cyclePath {
+		qualifiedNames[i] = edge.owner.Name + "." + edge.field.Name
+	}
+	return gqlerror.ErrorPosf(
+		cyclePath[0].field.Position,
+		"Input Object %s cannot be provided a finite value because it "+
+			"references itself through fields: %s.",
+		strconv.Quote(targetName),
+		strconv.Quote(strings.Join(qualifiedNames, ", ")),
+	)
 }
 
 func validateDirectiveDefinitions(schema *Schema) *gqlerror.Error {
@@ -569,6 +719,30 @@ func validateDefinition(schema *Schema, def *Definition) *gqlerror.Error {
 						typ.Kind,
 						field.Name,
 						kindList(Scalar, Enum, InputObject),
+					)
+				}
+			}
+		}
+		// def.Fields and def.Directives already include everything added by
+		// input object extensions, so a type turned into a OneOf Input Object
+		// with "extend input ... @oneOf" and fields added with
+		// "extend input" are checked here as well.
+		if def.IsOneOf() {
+			for _, field := range def.Fields {
+				if field.Type.NonNull {
+					return gqlerror.ErrorPosf(
+						field.Type.Position,
+						"OneOf input field %s.%s must be nullable.",
+						def.Name,
+						field.Name,
+					)
+				}
+				if field.DefaultValue != nil {
+					return gqlerror.ErrorPosf(
+						field.Position,
+						"OneOf input field %s.%s cannot have a default value.",
+						def.Name,
+						field.Name,
 					)
 				}
 			}

@@ -245,6 +245,42 @@ func (v *varValidator) validateVarType(
 			}
 		}
 
+		if def.IsOneOf() {
+			// A OneOf Input Object must carry exactly one key, whose value is
+			// not null. "__typename" is tolerated elsewhere and is not a key.
+			// This runs at every nesting depth, so OneOf objects embedded in
+			// another input object or in a list are checked as well; the list
+			// branch above also wraps a bare object into a one-element list
+			// before recursing.
+			resetPath()
+			var keys []string
+			for _, name := range val.MapKeys() {
+				if name.String() == "__typename" {
+					continue
+				}
+				keys = append(keys, name.String())
+			}
+
+			if len(keys) != 1 {
+				return val, gqlerror.ErrorPathf(
+					v.path,
+					`OneOf Input Object "%s" must specify exactly one key.`,
+					def.Name,
+				)
+			}
+
+			fieldName := keys[0]
+			if isNilReflectValue(val.MapIndex(reflect.ValueOf(fieldName))) {
+				v.path = append(v.path, ast.PathName(fieldName))
+				return val, gqlerror.ErrorPathf(
+					v.path,
+					`Field "%s.%s" must be non-null.`,
+					def.Name,
+					fieldName,
+				)
+			}
+		}
+
 		for _, fieldDef := range def.Fields {
 			resetPath()
 			v.path = append(v.path, ast.PathName(fieldDef.Name))
@@ -311,6 +347,18 @@ func IsValidFloatString(val reflect.Value, kind reflect.Kind) bool {
 // it was dereferenced to, so those keep their original element.
 func canStore(elem reflect.Type, cval reflect.Value) bool {
 	return cval.IsValid() && cval.Type().AssignableTo(elem)
+}
+
+// isNilReflectValue reports whether rv holds a nil value of a nullable Go
+// kind. A JSON null decoded into an `any` is a nil interface; typed maps may
+// instead present nil pointers, maps or slices, all of which count as null.
+func isNilReflectValue(rv reflect.Value) bool {
+	switch rv.Kind() {
+	case reflect.Pointer, reflect.Interface, reflect.Map,
+		reflect.Slice, reflect.Chan, reflect.Func:
+		return rv.IsNil()
+	}
+	return false
 }
 
 // maxSafeFloatInt is 2^53-1, the largest integer n for which float64(n) cannot

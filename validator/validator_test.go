@@ -631,3 +631,71 @@ func TestRemoveRule(t *testing.T) {
 	// no error
 	validator.RemoveRule("Rule that should no longer exist")
 }
+
+func TestOneOfInputObjectLiteral(t *testing.T) {
+	// "dogName" is deliberately not the first declared field.
+	schema := gqlparser.MustLoadSchema(&ast.Source{Name: "graph/schema.graphqls", Input: `
+type Query {
+	pet(p: PetFilter!): Boolean
+}
+
+input PetFilter @oneOf {
+	catName: String
+	dogName: String
+}
+`})
+
+	t.Run("null value names the supplied field", func(t *testing.T) {
+		q, err := parser.ParseQuery(&ast.Source{
+			Name:  "query.graphql",
+			Input: `{ pet(p: {dogName: null}) }`,
+		})
+		require.NoError(t, err)
+		errList := validator.Validate(schema, q)
+		require.Len(t, errList, 1)
+		require.EqualError(
+			t,
+			errList[0],
+			`query.graphql:1:20: Field "PetFilter.dogName" must be non-null.`,
+		)
+	})
+
+	t.Run("empty object needs exactly one key", func(t *testing.T) {
+		q, err := parser.ParseQuery(&ast.Source{
+			Name:  "query.graphql",
+			Input: `{ pet(p: {}) }`,
+		})
+		require.NoError(t, err)
+		errList := validator.Validate(schema, q)
+		require.Len(t, errList, 1)
+		require.EqualError(
+			t,
+			errList[0],
+			`query.graphql:1:10: OneOf Input Object "PetFilter" must specify exactly one key.`,
+		)
+	})
+
+	t.Run("two keys need exactly one key", func(t *testing.T) {
+		q, err := parser.ParseQuery(&ast.Source{
+			Name:  "query.graphql",
+			Input: `{ pet(p: {catName: "Tom", dogName: "Rex"}) }`,
+		})
+		require.NoError(t, err)
+		errList := validator.Validate(schema, q)
+		require.Len(t, errList, 1)
+		require.EqualError(
+			t,
+			errList[0],
+			`query.graphql:1:10: OneOf Input Object "PetFilter" must specify exactly one key.`,
+		)
+	})
+
+	t.Run("one non-null key is valid", func(t *testing.T) {
+		q, err := parser.ParseQuery(&ast.Source{
+			Name:  "query.graphql",
+			Input: `{ pet(p: {dogName: "Rex"}) }`,
+		})
+		require.NoError(t, err)
+		require.Nil(t, validator.Validate(schema, q))
+	})
+}

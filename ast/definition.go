@@ -65,6 +65,13 @@ func (d *Definition) OneOf(types ...string) bool {
 	return slices.Contains(types, d.Name)
 }
 
+// IsOneOf reports whether the definition is a OneOf Input Object, i.e. an
+// input object type that carries the @oneOf directive (on its definition or on
+// an extension).
+func (d *Definition) IsOneOf() bool {
+	return d.Kind == InputObject && d.Directives.ForName("oneOf") != nil
+}
+
 type FieldDefinition struct {
 	Description  string
 	Name         string

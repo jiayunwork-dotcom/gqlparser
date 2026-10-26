@@ -160,38 +160,37 @@ func ruleFuncValuesOfCorrectType(observers *Events, addError AddErrFunc, disable
 				}
 			}
 
-			for _, directive := range value.Definition.Directives {
-				if directive.Name == "oneOf" {
-					func() {
-						if len(value.Children) != 1 {
-							addError(
-								Message(
-									`OneOf Input Object "%s" must specify exactly one key.`,
-									value.Definition.Name,
-								),
-								At(value.Position),
-							)
-							return
-						}
+			if value.Definition.IsOneOf() {
+				if len(value.Children) != 1 {
+					addError(
+						Message(
+							`OneOf Input Object "%s" must specify exactly one key.`,
+							value.Definition.Name,
+						),
+						At(value.Position),
+					)
+					return
+				}
 
-						fieldValue := value.Children[0].Value
-						isNullLiteral := fieldValue == nil || fieldValue.Kind == ast.NullValue
-						if isNullLiteral {
-							addError(
-								Message(
-									`Field "%s.%s" must be non-null.`,
-									value.Definition.Name,
-									value.Definition.Fields[0].Name,
-								),
-								At(fieldValue.Position),
-							)
-							return
-						}
-
-						if fieldValue.Kind == ast.Variable {
-							return
-						}
-					}()
+				child := value.Children[0]
+				fieldValue := child.Value
+				isNullLiteral := fieldValue == nil || fieldValue.Kind == ast.NullValue
+				if isNullLiteral {
+					// The name comes from the supplied key, not the first
+					// declared field.
+					pos := value.Position
+					if fieldValue != nil && fieldValue.Position != nil {
+						pos = fieldValue.Position
+					}
+					addError(
+						Message(
+							`Field "%s.%s" must be non-null.`,
+							value.Definition.Name,
+							child.Name,
+						),
+						At(pos),
+					)
+					return
 				}
 			}
 

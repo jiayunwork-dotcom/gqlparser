@@ -635,6 +635,184 @@ inputs:
         id: ID!
       }
 
+  - name: oneOf input object fields must be nullable
+    input: |
+      input T @oneOf {
+        a: String!
+      }
+    error:
+      message: 'OneOf input field T.a must be nullable.'
+      locations: [{line: 2, column: 6}]
+
+  - name: oneOf input object fields cannot have a default value
+    input: |
+      input T @oneOf {
+        a: String = "x"
+      }
+    error:
+      message: 'OneOf input field T.a cannot have a default value.'
+      locations: [{line: 2, column: 3}]
+
+  - name: an extension cannot add a non-null field to a oneOf input object
+    input: |
+      input T @oneOf {
+        a: String
+      }
+      extend input T {
+        b: Int!
+      }
+    error:
+      message: 'OneOf input field T.b must be nullable.'
+      locations: [{line: 5, column: 6}]
+
+  - name: an extension cannot add a field with a default to a oneOf input object
+    input: |
+      input T @oneOf {
+        a: String
+      }
+      extend input T {
+        b: Int = 3
+      }
+    error:
+      message: 'OneOf input field T.b cannot have a default value.'
+      locations: [{line: 5, column: 3}]
+
+  - name: an extension can add nullable fields to a oneOf input object
+    input: |
+      input T @oneOf {
+        a: String
+      }
+      extend input T {
+        b: Int
+      }
+
+  - name: an extension can add another directive to a oneOf input object
+    input: |
+      directive @foo on INPUT_OBJECT
+      input T @oneOf {
+        a: String
+      }
+      extend input T @foo
+
+  - name: an extension turning an input object into oneOf checks its fields
+    input: |
+      input T {
+        a: String!
+      }
+      extend input T @oneOf
+    error:
+      message: 'OneOf input field T.a must be nullable.'
+      locations: [{line: 2, column: 6}]
+
+  - name: an extension can turn an input object into a oneOf input object
+    input: |
+      input T {
+        a: String
+      }
+      extend input T @oneOf
+
+  - name: oneOf input object mixed into a non-null cycle
+    input: |
+      input First @oneOf {
+        second: Second
+      }
+      input Second {
+        first: First!
+      }
+    error:
+      message: 'Input Object "First" cannot be provided a finite value because it references itself through fields: "First.second, Second.first".'
+      locations: [{line: 2, column: 3}]
+
+  - name: two oneOf input objects referencing each other
+    input: |
+      input A @oneOf {
+        b: B
+      }
+      input B @oneOf {
+        a: A
+      }
+    error:
+      message: 'Input Object "A" cannot be provided a finite value because it references itself through fields: "A.b, B.a".'
+      locations: [{line: 2, column: 3}]
+
+  - name: oneOf input object referencing only itself
+    input: |
+      input O @oneOf {
+        self: O
+      }
+    error:
+      message: 'Input Object "O" cannot be provided a finite value because it references itself through fields: "O.self".'
+      locations: [{line: 2, column: 3}]
+
+  - name: oneOf cycle closed by an extension field
+    input: |
+      input First @oneOf {
+        second: Second
+      }
+      input Second {
+        first: First
+      }
+      extend input Second {
+        other: First!
+      }
+    error:
+      message: 'Input Object "First" cannot be provided a finite value because it references itself through fields: "First.second, Second.other".'
+      locations: [{line: 2, column: 3}]
+
+  - name: oneOf input object escapes through a scalar field
+    input: |
+      input First @oneOf {
+        first: First
+        leaf: String
+      }
+
+  - name: oneOf input object escapes through an enum field
+    input: |
+      enum E { A }
+      input First @oneOf {
+        first: First
+        leaf: E
+      }
+
+  - name: oneOf input object escapes through a list field
+    input: |
+      input First @oneOf {
+        first: First
+        leaves: [First]
+      }
+
+  - name: oneOf input object escapes through an input object with a finite value
+    input: |
+      input First @oneOf {
+        first: First
+        good: Good
+      }
+      input Good {
+        id: ID
+      }
+
+  - name: oneOf escape makes a dependent regular input object finite
+    input: |
+      input A @oneOf {
+        b: B
+        ok: String
+      }
+      input B {
+        a: A!
+      }
+
+  - name: nullable field into a oneOf cycle does not widen the cycle
+    input: |
+      input Holder {
+        maybe: BadOne
+      }
+      input BadOne @oneOf {
+        next: BadOne
+      }
+    error:
+      message: 'Input Object "BadOne" cannot be provided a finite value because it references itself through fields: "BadOne.next".'
+      locations: [{line: 5, column: 3}]
+
   - name: default values cannot repeat an input field
     input: |
       input Point {

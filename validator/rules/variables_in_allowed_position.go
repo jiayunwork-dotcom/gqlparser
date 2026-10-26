@@ -49,7 +49,7 @@ var VariablesInAllowedPositionRule = Rule{
 			if value.Kind != ast.ObjectValue || value.Definition == nil {
 				return
 			}
-			if value.Definition.Directives.ForName("oneOf") == nil {
+			if !value.Definition.IsOneOf() {
 				return
 			}
 

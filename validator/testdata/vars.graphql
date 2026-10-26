@@ -16,6 +16,20 @@ type Query {
     stringArrayArg(i: [String]): Boolean!
     boolArrayArg(i: [Boolean]): Boolean!
     typeArrayArg(i: [CustomType]): Boolean!
+    oneOfArg(i: OneOfInput!): Boolean!
+    oneOfNullableArg(i: OneOfInput): Boolean!
+    oneOfArrayArg(i: [OneOfInput!]): Boolean!
+    oneOfWrapperArg(i: OneOfWrapper!): Boolean!
+}
+
+input OneOfInput @oneOf {
+    str: String
+    num: Int
+}
+
+input OneOfWrapper {
+    name: String!
+    choice: OneOfInput
 }
 
 input InputType {

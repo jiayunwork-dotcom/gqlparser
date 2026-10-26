@@ -752,6 +752,319 @@ func TestValidateVars(t *testing.T) {
 			require.NoError(t, gerr)
 		})
 	})
+
+	t.Run("OneOf input object", func(t *testing.T) {
+		t.Run("valid value with one key", func(t *testing.T) {
+			//nolint:staticcheck
+			q := gqlparser.MustLoadQuery(
+				schema,
+				`query foo($var: OneOfInput!) { oneOfArg(i: $var) }`,
+			)
+			vars, gerr := validator.VariableValues(
+				schema,
+				q.Operations.ForName(""),
+				map[string]any{
+					"var": map[string]any{"str": "foobar"},
+				},
+			)
+			require.NoError(t, gerr)
+			require.EqualValues(t, map[string]any{"str": "foobar"}, vars["var"])
+		})
+
+		t.Run("no keys", func(t *testing.T) {
+			//nolint:staticcheck
+			q := gqlparser.MustLoadQuery(
+				schema,
+				`query foo($var: OneOfInput!) { oneOfArg(i: $var) }`,
+			)
+			_, gerr := validator.VariableValues(
+				schema,
+				q.Operations.ForName(""),
+				map[string]any{
+					"var": map[string]any{},
+				},
+			)
+			require.EqualError(
+				t,
+				gerr,
+				`input: variable.var OneOf Input Object "OneOfInput" must specify exactly one key.`,
+			)
+		})
+
+		t.Run("two keys", func(t *testing.T) {
+			//nolint:staticcheck
+			q := gqlparser.MustLoadQuery(
+				schema,
+				`query foo($var: OneOfInput!) { oneOfArg(i: $var) }`,
+			)
+			_, gerr := validator.VariableValues(
+				schema,
+				q.Operations.ForName(""),
+				map[string]any{
+					"var": map[string]any{"str": "foobar", "num": 1},
+				},
+			)
+			require.EqualError(
+				t,
+				gerr,
+				`input: variable.var OneOf Input Object "OneOfInput" must specify exactly one key.`,
+			)
+		})
+
+		t.Run("two keys with an extra null", func(t *testing.T) {
+			//nolint:staticcheck
+			q := gqlparser.MustLoadQuery(
+				schema,
+				`query foo($var: OneOfInput!) { oneOfArg(i: $var) }`,
+			)
+			_, gerr := validator.VariableValues(
+				schema,
+				q.Operations.ForName(""),
+				map[string]any{
+					"var": map[string]any{"str": "foobar", "num": nil},
+				},
+			)
+			require.EqualError(
+				t,
+				gerr,
+				`input: variable.var OneOf Input Object "OneOfInput" must specify exactly one key.`,
+			)
+		})
+
+		t.Run("sole key with a null value names the field", func(t *testing.T) {
+			// "num" is not the first declared field, so this also guards
+			// against reporting the type's first field.
+			//nolint:staticcheck
+			q := gqlparser.MustLoadQuery(
+				schema,
+				`query foo($var: OneOfInput!) { oneOfArg(i: $var) }`,
+			)
+			_, gerr := validator.VariableValues(
+				schema,
+				q.Operations.ForName(""),
+				map[string]any{
+					"var": map[string]any{"num": nil},
+				},
+			)
+			require.EqualError(
+				t,
+				gerr,
+				`input: variable.var.num Field "OneOfInput.num" must be non-null.`,
+			)
+		})
+
+		t.Run("sole key with a typed nil pointer", func(t *testing.T) {
+			//nolint:staticcheck
+			q := gqlparser.MustLoadQuery(
+				schema,
+				`query foo($var: OneOfInput!) { oneOfArg(i: $var) }`,
+			)
+			_, gerr := validator.VariableValues(
+				schema,
+				q.Operations.ForName(""),
+				map[string]any{
+					"var": map[string]*string{"str": nil},
+				},
+			)
+			require.EqualError(
+				t,
+				gerr,
+				`input: variable.var.str Field "OneOfInput.str" must be non-null.`,
+			)
+		})
+
+		t.Run("nested inside another input object with no keys", func(t *testing.T) {
+			//nolint:staticcheck
+			q := gqlparser.MustLoadQuery(
+				schema,
+				`query foo($var: OneOfWrapper!) { oneOfWrapperArg(i: $var) }`,
+			)
+			_, gerr := validator.VariableValues(
+				schema,
+				q.Operations.ForName(""),
+				map[string]any{
+					"var": map[string]any{
+						"name":   "foobar",
+						"choice": map[string]any{},
+					},
+				},
+			)
+			require.EqualError(
+				t,
+				gerr,
+				`input: variable.var.choice OneOf Input Object "OneOfInput" must specify exactly one key.`,
+			)
+		})
+
+		t.Run("nested inside another input object with a null key", func(t *testing.T) {
+			//nolint:staticcheck
+			q := gqlparser.MustLoadQuery(
+				schema,
+				`query foo($var: OneOfWrapper!) { oneOfWrapperArg(i: $var) }`,
+			)
+			_, gerr := validator.VariableValues(
+				schema,
+				q.Operations.ForName(""),
+				map[string]any{
+					"var": map[string]any{
+						"name":   "foobar",
+						"choice": map[string]any{"str": nil},
+					},
+				},
+			)
+			require.EqualError(
+				t,
+				gerr,
+				`input: variable.var.choice.str Field "OneOfInput.str" must be non-null.`,
+			)
+		})
+
+		t.Run("nested valid value", func(t *testing.T) {
+			//nolint:staticcheck
+			q := gqlparser.MustLoadQuery(
+				schema,
+				`query foo($var: OneOfWrapper!) { oneOfWrapperArg(i: $var) }`,
+			)
+			vars, gerr := validator.VariableValues(
+				schema,
+				q.Operations.ForName(""),
+				map[string]any{
+					"var": map[string]any{
+						"name":   "foobar",
+						"choice": map[string]any{"str": "nested"},
+					},
+				},
+			)
+			require.NoError(t, gerr)
+			require.EqualValues(
+				t,
+				map[string]any{
+					"name":   "foobar",
+					"choice": map[string]any{"str": "nested"},
+				},
+				vars["var"],
+			)
+		})
+
+		t.Run("invalid element in a list", func(t *testing.T) {
+			//nolint:staticcheck
+			q := gqlparser.MustLoadQuery(
+				schema,
+				`query foo($var: [OneOfInput!]) { oneOfArrayArg(i: $var) }`,
+			)
+			_, gerr := validator.VariableValues(
+				schema,
+				q.Operations.ForName(""),
+				map[string]any{
+					"var": []any{
+						map[string]any{"str": "foobar"},
+						map[string]any{"num": nil},
+					},
+				},
+			)
+			require.EqualError(
+				t,
+				gerr,
+				`input: variable.var[1].num Field "OneOfInput.num" must be non-null.`,
+			)
+		})
+
+		t.Run("single object coerced into a list element", func(t *testing.T) {
+			//nolint:staticcheck
+			q := gqlparser.MustLoadQuery(
+				schema,
+				`query foo($var: [OneOfInput!]) { oneOfArrayArg(i: $var) }`,
+			)
+			_, gerr := validator.VariableValues(
+				schema,
+				q.Operations.ForName(""),
+				map[string]any{
+					"var": map[string]any{},
+				},
+			)
+			require.EqualError(
+				t,
+				gerr,
+				`input: variable.var[0] OneOf Input Object "OneOfInput" must specify exactly one key.`,
+			)
+		})
+
+		t.Run("whole variable null stays null when nullable", func(t *testing.T) {
+			//nolint:staticcheck
+			q := gqlparser.MustLoadQuery(
+				schema,
+				`query foo($var: OneOfInput) { oneOfNullableArg(i: $var) }`,
+			)
+			vars, gerr := validator.VariableValues(
+				schema,
+				q.Operations.ForName(""),
+				map[string]any{"var": nil},
+			)
+			require.NoError(t, gerr)
+			require.Nil(t, vars["var"])
+		})
+
+		t.Run("absent nullable variable stays absent", func(t *testing.T) {
+			//nolint:staticcheck
+			q := gqlparser.MustLoadQuery(
+				schema,
+				`query foo($var: OneOfInput) { oneOfNullableArg(i: $var) }`,
+			)
+			vars, gerr := validator.VariableValues(
+				schema,
+				q.Operations.ForName(""),
+				map[string]any{},
+			)
+			require.NoError(t, gerr)
+			_, present := vars["var"]
+			require.False(t, present)
+		})
+
+		t.Run("__typename does not count as the key", func(t *testing.T) {
+			//nolint:staticcheck
+			q := gqlparser.MustLoadQuery(
+				schema,
+				`query foo($var: OneOfInput!) { oneOfArg(i: $var) }`,
+			)
+			vars, gerr := validator.VariableValues(
+				schema,
+				q.Operations.ForName(""),
+				map[string]any{
+					"var": map[string]any{"__typename": "OneOfInput", "str": "foobar"},
+				},
+			)
+			require.NoError(t, gerr)
+			require.EqualValues(
+				t,
+				map[string]any{"__typename": "OneOfInput", "str": "foobar"},
+				vars["var"],
+			)
+
+			_, gerr = validator.VariableValues(
+				schema,
+				q.Operations.ForName(""),
+				map[string]any{
+					"var": map[string]any{"__typename": "OneOfInput"},
+				},
+			)
+			require.EqualError(
+				t,
+				gerr,
+				`input: variable.var OneOf Input Object "OneOfInput" must specify exactly one key.`,
+			)
+		})
+
+		t.Run("valid default value", func(t *testing.T) {
+			//nolint:staticcheck
+			q := gqlparser.MustLoadQuery(
+				schema,
+				`query foo($var: OneOfInput! = {str: "foobar"}) { oneOfArg(i: $var) }`,
+			)
+			vars, gerr := validator.VariableValues(schema, q.Operations.ForName(""), nil)
+			require.NoError(t, gerr)
+			require.EqualValues(t, map[string]any{"str": "foobar"}, vars["var"])
+		})
+	})
 }
 
 func TestValidateVarsWithRules(t *testing.T) {
